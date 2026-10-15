@@ -71,8 +71,10 @@ jobs:
           docker build -t $IMAGE_TAG ./Freshbox/microserviciosEKSBackend/${{ matrix.service }}
           docker push $IMAGE_TAG
           
-          # Scan using Trivy
-          docker run --rm aquasec/trivy:latest image --severity CRITICAL,HIGH $IMAGE_TAG
+          # Scan using Trivy (monta el socket para que vea la imagen local)
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:latest image --severity CRITICAL,HIGH --image-src docker $IMAGE_TAG
 
       - name: Update Kubeconfig
         run: aws eks update-kubeconfig --name freshbox-eks --region ${{ env.AWS_REGION }}
