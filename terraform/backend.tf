@@ -2,8 +2,11 @@ terraform {
   backend "s3" {
     key     = "prod/terraform.tfstate"
     encrypt = true
-    # bucket, region y dynamodb_table se inyectan desde GitHub Actions
-    # vía -backend-config (ver .github/workflows/pipeline.yaml).
-    # Para uso local: terraform init -backend-config="bucket=..." -backend-config="dynamodb_table=..." -backend-config="region=us-east-1"
+    # bucket y region se inyectan desde GitHub Actions vía -backend-config
+    # (ver .github/workflows/pipeline.yaml).
+    # SIN bloqueo DynamoDB a propósito: un run que muere (p. ej. token del
+    # Learner Lab expirado) deja el lock colgado y bloquea todos los runs
+    # siguientes. La exclusión mutua la garantiza el `concurrency` de Actions.
+    # Para uso local: terraform init -backend-config="bucket=..." -backend-config="region=us-east-1"
   }
 }
