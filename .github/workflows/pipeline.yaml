@@ -4,7 +4,37 @@ on:
     branches: [ main ]
 
 jobs:
+  lint-and-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      # 1. TFLint: Calidad de código Terraform
+      - uses: terraform-linters/setup-tflint@v3
+      - name: Init TFLint
+        run: tflint --init
+        working-directory: terraform
+      - name: Run TFLint
+        run: tflint -f compact
+        working-directory: terraform
+
+      # 2. Checkov: Escaneo de seguridad en IaC (Terraform + K8s)
+      - name: Run Checkov Security Scan
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: .
+          framework: terraform,kubernetes
+          soft_fail: false # Falla si detecta problemas críticos
+
+      # 3. Validación de Kubernetes YAMLs
+      - name: Validate Kubernetes YAMLs
+        run: |
+          for file in k8s/*.yaml; do
+            kubectl apply --dry-run=client -f $file
+          done
+
   build-and-push:
+    needs: lint-and-validate
     runs-on: ubuntu-latest
     env:
       AWS_REGION: 'us-east-1'
