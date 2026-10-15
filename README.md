@@ -16,10 +16,17 @@ Como Arquitecto Líder de este proyecto, mi objetivo ha sido transformar la infr
 - `k8s/`: Definiciones de despliegue, HPA, NetworkPolicies e Ingress.
 - `terraform/`: Infraestructura como Código (IaC) modularizada (VPC, EKS, RDS, ECR).
 
-## Cómo Desplegar
-1. **Infraestructura:** Asegurarse de tener configurado el backend de Terraform (S3/DynamoDB). Ejecutar `terraform init` y `terraform apply` desde la carpeta `terraform/`.
-2. **CI/CD:** El pipeline en `.github/workflows/pipeline.yaml` gestiona automáticamente la construcción, escaneo y despliegue.
-3. **Secretos:** Configurar `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` y `AWS_REGION` en los GitHub Secrets del repositorio.
+## Escenarios de Despliegue: Producción vs. Laboratorio
+Este repositorio contiene una arquitectura de nivel profesional (Producción). Sin embargo, para permitir su despliegue exitoso en entornos limitados como **AWS Learner Lab**, he aplicado las siguientes consideraciones:
+
+1. **Configuración de Seguridad Avanzada (Comentada):**
+   - Recursos como `KMS Keys` (Cifrado de Secrets en EKS) y `VPC Flow Logs` (Auditoría de red) están presentes en el código pero comentados. 
+   - *Justificación:* Estos recursos requieren privilegios elevados de IAM (`iam:CreateRole`, `kms:CreateKey`) que suelen estar restringidos en cuentas de estudiante.
+   - *Modo Producción:* Para llevar esto a un entorno empresarial real, simplemente descomenta los bloques de código marcados como "CONFIGURACIÓN PRO" y asegúrate de que el Service Account del pipeline tenga los permisos IAM necesarios.
+
+2. **Justificación de Riesgos:**
+   - He priorizado la viabilidad del despliegue (asegurando que el pipeline de GitHub Actions funcione) sobre la implementación de logs de auditoría profundos, manteniendo el resto de las capas de seguridad (Trivy, Checkov, NetworkPolicies) totalmente operativas.
+
 
 ---
 *Documentación técnica mantenida por Pablo, Arquitecto de Soluciones FreshBox.*
