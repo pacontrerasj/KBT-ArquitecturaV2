@@ -19,6 +19,7 @@ module "rds" {
   source            = "./modules/rds"
   vpc_id            = module.vpc.vpc_id
   security_group_id = module.security.db_sg_id
+  subnet_ids        = module.vpc.subnet_ids
 }
 
 module "eks" {

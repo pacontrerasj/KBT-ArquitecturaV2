@@ -56,6 +56,14 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v1
 
+      - name: Ensure ECR repository exists
+        run: |
+          aws ecr describe-repositories --repository-names freshbox-${{ matrix.service }} --region ${{ env.AWS_REGION }} \
+            || aws ecr create-repository --repository-name freshbox-${{ matrix.service }} \
+                 --image-tag-mutability IMMUTABLE \
+                 --image-scanning-configuration scanOnPush=true \
+                 --region ${{ env.AWS_REGION }}
+
       - name: Build and Scan Docker Image
         run: |
           # Build context is specific to the service directory
@@ -71,6 +79,8 @@ jobs:
 
       - name: Deploy to EKS
         run: |
+          # El namespace debe existir antes de aplicar los Deployments
+          kubectl apply -f k8s/namespace.yaml
           # Apply the deployment for this specific service
           kubectl apply -f k8s/${{ matrix.service }}-deployment.yaml
           # Usa la imagen recien construida (tag con el SHA del commit)
