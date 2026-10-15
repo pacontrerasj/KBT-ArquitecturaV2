@@ -1,0 +1,28 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: freshbox
+spec:
+  podSelector: {} # Aplica a todos los pods en el namespace
+  policyTypes:
+  - Ingress
+  - Egress
+---
+# Ejemplo de política para permitir tráfico desde Ingress Controller
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-frontend
+  namespace: freshbox
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: ingress-nginx # Ajustar según tu ingress

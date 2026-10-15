@@ -1,0 +1,44 @@
+name: CI/CD Pipeline
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: 'us-east-1'
+    strategy:
+      matrix:
+        service: [get-products, create-product, update-product, delete-product]
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build and Scan Docker Image
+        run: |
+          # Build context is specific to the service directory
+          IMAGE_TAG=${{ steps.login-ecr.outputs.registry }}/freshbox-${{ matrix.service }}:${{ github.sha }}
+          docker build -t $IMAGE_TAG ./Freshbox/microserviciosEKSBackend/${{ matrix.service }}
+          docker push $IMAGE_TAG
+          
+          # Scan using Trivy
+          docker run --rm aquasec/trivy:latest image --severity CRITICAL,HIGH $IMAGE_TAG
+
+      - name: Update Kubeconfig
+        run: aws eks update-kubeconfig --name freshbox-eks --region ${{ env.AWS_REGION }}
+
+      - name: Deploy to EKS
+        run: |
+          # Apply the deployment for this specific service
+          kubectl apply -f k8s/${{ matrix.service }}-deployment.yaml
