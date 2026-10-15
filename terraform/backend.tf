@@ -1,9 +1,9 @@
 terraform {
   backend "s3" {
-    bucket         = "freshbox-terraform-state" # Debes crear este bucket manualmente antes
-    key            = "prod/terraform.tfstate"
-    region         = "us-east-1"
-    dynamodb_table = "freshbox-terraform-lock" # Debes crear esta tabla manualmente
-    encrypt        = true
+    key     = "prod/terraform.tfstate"
+    encrypt = true
+    # bucket, region y dynamodb_table se inyectan desde GitHub Actions
+    # vía -backend-config (ver .github/workflows/pipeline.yaml).
+    # Para uso local: terraform init -backend-config="bucket=..." -backend-config="dynamodb_table=..." -backend-config="region=us-east-1"
   }
 }

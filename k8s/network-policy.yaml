@@ -4,25 +4,43 @@ metadata:
   name: default-deny-all
   namespace: freshbox
 spec:
-  podSelector: {} # Aplica a todos los pods en el namespace
+  podSelector: {} # Aplica a todos los pods del namespace
   policyTypes:
   - Ingress
   - Egress
+  egress:
+  # DNS
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  # MySQL (RDS) dentro de la VPC
+  - to:
+    - ipBlock:
+        cidr: 10.0.0.0/16
+    ports:
+    - protocol: TCP
+      port: 3306
+  # Trafico entre pods del mismo namespace (frontend -> backends)
+  - to:
+    - podSelector: {}
 ---
-# Ejemplo de política para permitir tráfico desde Ingress Controller
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-ingress-to-frontend
+  name: allow-ingress-to-workloads
   namespace: freshbox
 spec:
-  podSelector:
-    matchLabels:
-      app: frontend
+  podSelector: {}
   policyTypes:
   - Ingress
   ingress:
   - from:
-    - podSelector:
-        matchLabels:
-          app: ingress-nginx # Ajustar según tu ingress
+    # ALB / load balancer dentro de la VPC
+    - ipBlock:
+        cidr: 10.0.0.0/16
+    # Pods del mismo namespace
+    - podSelector: {}
