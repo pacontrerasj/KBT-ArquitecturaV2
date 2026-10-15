@@ -5,4 +5,3 @@ RUN npm install --production
 COPY index.js .
 EXPOSE 3001
 CMD ["node", "index.js"]
-# 2026 - Disenador asignatura: Ignacio A. Pastenet M.

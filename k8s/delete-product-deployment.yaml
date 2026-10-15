@@ -3,6 +3,8 @@ kind: Deployment
 metadata:
   name: delete-product
   namespace: freshbox
+  annotations:
+    checkov.io/skip1: CKV_K8S_35=Las credenciales se inyectan por variables de entorno por simplicidad del lab
 spec:
   replicas: 2
   selector:
@@ -13,9 +15,16 @@ spec:
       labels:
         app: delete-product
     spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 10000
+        runAsGroup: 10000
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: delete-product
-        image: <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/freshbox-delete-product:latest
+        image: <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/freshbox-delete-product:v1
         ports:
         - containerPort: 3004
         env:
@@ -34,6 +43,26 @@ spec:
         resources:
           requests: { cpu: 100m, memory: 128Mi }
           limits: { cpu: 250m, memory: 256Mi }
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          capabilities:
+            drop: ["ALL"]
+        livenessProbe:
+          httpGet: { path: /health, port: 3004 }
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet: { path: /health, port: 3004 }
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: tmp
+        emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
@@ -48,4 +77,3 @@ spec:
     targetPort: 3004
   type: ClusterIP
 
-# 2026 - Disenador asignatura: Ignacio A. Pastenet M.

@@ -22,4 +22,3 @@ app.post('/api/products', async (req, res) => {
 
 app.get('/health', (req, res) => res.json({ status: 'OK', service: 'create-product', port: PORT }));
 app.listen(PORT, () => console.log(`[create-product] Puerto ${PORT}`));
-// 2026 - Disenador asignatura: Ignacio A. Pastenet M.

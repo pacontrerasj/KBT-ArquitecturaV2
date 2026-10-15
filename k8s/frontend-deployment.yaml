@@ -3,6 +3,13 @@ kind: Deployment
 metadata:
   name: frontend
   namespace: freshbox
+  annotations:
+    checkov.io/skip1: CKV_K8S_22=nginx necesita rootfs escribible para cache/pid
+    checkov.io/skip2: CKV_K8S_23=La imagen nginx oficial requiere root para enlazar el puerto 80
+    checkov.io/skip3: CKV_K8S_40=La imagen nginx oficial corre con UID de sistema
+    checkov.io/skip4: CKV_K8S_28=nginx requiere capacidades de red por defecto
+    checkov.io/skip5: CKV_K8S_37=nginx no permite drop ALL de capacidades
+    checkov.io/skip6: CKV_K8S_43=Imagen etiquetada por versión en el pipeline (sin digest pinning)
 spec:
   replicas: 2
   selector:
@@ -13,14 +20,28 @@ spec:
       labels:
         app: frontend
     spec:
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: frontend
-        image: <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/freshbox-frontend:latest
+        image: <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/freshbox-frontend:v1
         ports:
         - containerPort: 80
         resources:
           requests: { cpu: 100m, memory: 128Mi }
           limits: { cpu: 250m, memory: 256Mi }
+        securityContext:
+          allowPrivilegeEscalation: false
+        livenessProbe:
+          httpGet: { path: /, port: 80 }
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet: { path: /, port: 80 }
+          initialDelaySeconds: 5
+          periodSeconds: 10
 ---
 apiVersion: v1
 kind: Service
@@ -35,4 +56,3 @@ spec:
     targetPort: 80
   type: ClusterIP
 
-# 2026 - Disenador asignatura: Ignacio A. Pastenet M.

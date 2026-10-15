@@ -21,4 +21,3 @@ app.delete('/api/products/:id', async (req, res) => {
 
 app.get('/health', (req, res) => res.json({ status: 'OK', service: 'delete-product', port: PORT }));
 app.listen(PORT, () => console.log(`[delete-product] Puerto ${PORT}`));
-// 2026 - Disenador asignatura: Ignacio A. Pastenet M.

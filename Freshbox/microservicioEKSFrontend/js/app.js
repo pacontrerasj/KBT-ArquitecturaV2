@@ -49,4 +49,3 @@ function cancelarEdicion() { limpiarFormulario(); }
 function limpiarFormulario() { document.getElementById('producto-form').reset(); document.getElementById('producto-id').value=''; document.getElementById('form-titulo').textContent='Nuevo Producto'; }
 function mostrarMensaje(t, tipo) { const m=document.getElementById('mensaje'); m.textContent=t; m.className=tipo==='exito'?'mensaje-exito':'mensaje-error'; setTimeout(()=>{m.textContent='';m.className='';},4000); }
 function escapar(s) { return s.replace(/'/g,"\\'"); }
-// 2026 - Disenador asignatura: Ignacio A. Pastenet M.

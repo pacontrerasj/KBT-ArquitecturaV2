@@ -29,4 +29,3 @@ app.get('/api/products/:id', async (req, res) => {
 app.get('/health', (req, res) => res.json({ status: 'OK', service: 'get-products', port: PORT }));
 app.listen(PORT, () => console.log(`[get-products] Puerto ${PORT}`));
 
-// 2026 - Disenador asignatura: Ignacio A. Pastenet M.

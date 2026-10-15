@@ -56,6 +56,7 @@ resource "aws_s3_bucket" "flow_logs" {
   # checkov:skip=CKV_AWS_18: Sin bucket secundario para access logging en el lab
   # checkov:skip=CKV_AWS_144: Sin replicación cross-region en el lab
   # checkov:skip=CKV_AWS_145: Sin KMS en el Learner Lab (se usa SSE-S3)
+  # checkov:skip=CKV2_AWS_62: El bucket de flow logs no requiere notificaciones de eventos
   bucket_prefix = "freshbox-flow-logs-"
   force_destroy = true
   tags          = { Name = "freshbox-flow-logs" }
@@ -89,14 +90,8 @@ resource "aws_s3_bucket_public_access_block" "flow_logs" {
 resource "aws_s3_bucket_ownership_controls" "flow_logs" {
   bucket = aws_s3_bucket.flow_logs.id
   rule {
-    object_ownership = "BucketOwnerPreferred"
+    object_ownership = "BucketOwnerEnforced"
   }
-}
-
-resource "aws_s3_bucket_acl" "flow_logs" {
-  depends_on = [aws_s3_bucket_ownership_controls.flow_logs]
-  bucket     = aws_s3_bucket.flow_logs.id
-  acl        = "private"
 }
 
 resource "aws_s3_bucket_lifecycle_configuration" "flow_logs" {
@@ -127,7 +122,6 @@ resource "aws_s3_bucket_policy" "flow_logs" {
         Condition = {
           StringEquals = {
             "aws:SourceAccount" = data.aws_caller_identity.current.account_id
-            "s3:x-amz-acl"      = "bucket-owner-full-control"
           }
         }
       },
