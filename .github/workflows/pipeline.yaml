@@ -122,6 +122,19 @@ jobs:
             done
           fi
 
+          # --- ECR en cifrado viejo (AES256) pendiente de KMS ---
+          # Un repo con imagenes no se puede "reemplazar" (el destroy usa el estado
+          # previo con force_delete=false). Se borra para que Terraform lo RECREE limpio.
+          for s in get-products create-product update-product delete-product frontend; do
+            enc=$(aws ecr describe-repositories --repository-names "freshbox-$s" \
+              --query 'repositories[0].encryptionConfiguration.encryptionType' \
+              --output text 2>/dev/null || true)
+            if [ "$enc" = "AES256" ]; then
+              echo "::warning::ECR 'freshbox-$s' en AES256; borrando para recrearlo con KMS"
+              aws ecr delete-repository --repository-name "freshbox-$s" --force
+            fi
+          done
+
       - name: Adoptar repos ECR existentes (idempotente)
         working-directory: terraform
         run: |
