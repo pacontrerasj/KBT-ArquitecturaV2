@@ -44,6 +44,8 @@ jobs:
       rds_endpoint: ${{ steps.tf_outputs.outputs.rds_endpoint }}
     env:
       AWS_REGION: us-east-1
+      TF_IN_AUTOMATION: "true"
+      TF_CLI_ARGS: "-no-color"
     steps:
       - uses: actions/checkout@v3
       - uses: hashicorp/setup-terraform@v3
@@ -75,6 +77,51 @@ jobs:
             -backend-config="bucket=${TF_BACKEND_BUCKET}" \
             -backend-config="region=${AWS_REGION}"
 
+      # Elimina recursos que existen en AWS pero NO están en el state (restos de
+      # un apply cancelado/expirado). Nunca toca recursos administrados por Terraform.
+      - name: Limpiar huérfanos (no administrados por Terraform)
+        working-directory: terraform
+        run: |
+          managed() { terraform state list 2>/dev/null | grep -qx "$1"; }
+
+          # --- EKS huérfano (conflicto de nombre) ---
+          if ! managed 'module.eks.aws_eks_cluster.main' \
+             && aws eks describe-cluster --name freshbox-eks >/dev/null 2>&1; then
+            echo "::warning::EKS 'freshbox-eks' existe fuera del state; eliminando huérfano"
+            for ng in $(aws eks list-nodegroups --cluster-name freshbox-eks \
+              --query 'nodegroups' --output text); do
+              aws eks delete-nodegroup --cluster-name freshbox-eks --nodegroup-name "$ng" || true
+              aws eks wait nodegroup-deleted --cluster-name freshbox-eks --nodegroup-name "$ng" || true
+            done
+            aws eks delete-cluster --name freshbox-eks || true
+            aws eks wait cluster-deleted --name freshbox-eks || true
+          fi
+
+          # --- RDS huérfano ---
+          if ! managed 'module.rds.aws_db_instance.default'; then
+            for db in $(aws rds describe-db-instances \
+              --query "DBInstances[?starts_with(DBInstanceIdentifier,'terraform-')].DBInstanceIdentifier" \
+              --output text); do
+              echo "::warning::RDS huérfano '$db'; eliminando"
+              aws rds modify-db-instance --db-instance-identifier "$db" \
+                --no-deletion-protection --apply-immediately >/dev/null 2>&1 || true
+              aws rds delete-db-instance --db-instance-identifier "$db" \
+                --skip-final-snapshot --delete-automated-backups >/dev/null 2>&1 || true
+              aws rds wait db-instance-deleted --db-instance-identifier "$db" || true
+            done
+          fi
+
+          # --- DB subnet group huérfano (tras eliminar el RDS que lo usaba) ---
+          if ! managed 'module.rds.aws_db_subnet_group.default' \
+             && aws rds describe-db-subnet-groups \
+                  --db-subnet-group-name freshbox-db-subnet-group >/dev/null 2>&1; then
+            echo "::warning::DB subnet group huérfano; eliminando"
+            for i in 1 2 3 4 5 6; do
+              aws rds delete-db-subnet-group \
+                --db-subnet-group-name freshbox-db-subnet-group && break || sleep 20
+            done
+          fi
+
       - name: Adoptar repos ECR existentes (idempotente)
         working-directory: terraform
         run: |
@@ -88,8 +135,38 @@ jobs:
           done
 
       - name: Terraform Apply
+        id: apply
         working-directory: terraform
+        continue-on-error: true
         run: terraform apply -auto-approve -input=false
+
+      - name: Diagnóstico del apply (si falló)
+        if: steps.apply.outcome == 'failure'
+        working-directory: terraform
+        run: |
+          echo "=========== terraform state list ==========="
+          terraform state list || true
+          echo "=========== EKS ==========="
+          aws eks describe-cluster --name freshbox-eks \
+            --query 'cluster.{status:status,health:health,version:version}' 2>&1 || true
+          echo "=========== RDS ==========="
+          aws rds describe-db-instances \
+            --query 'DBInstances[].{id:DBInstanceIdentifier,status:DBInstanceStatus}' \
+            --output table 2>&1 || true
+          echo "=========== errored.tfstate ==========="
+          ls -la errored.tfstate 2>/dev/null || echo "sin errored.tfstate"
+
+      - name: Subir errored.tfstate (si existe)
+        if: steps.apply.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: errored-tfstate
+          path: terraform/errored.tfstate
+          if-no-files-found: ignore
+
+      - name: Fallar el job si el apply falló
+        if: steps.apply.outcome == 'failure'
+        run: exit 1
 
       - name: Terraform Outputs
         id: tf_outputs
@@ -132,7 +209,7 @@ jobs:
 
       - name: Build and Scan Docker Image
         run: |
-          IMAGE_TAG=${{ steps.login-ecr.outputs.registry }}/freshbox-${{ matrix.service }}:${{ github.sha }}
+          IMAGE_TAG=${{ steps.login-ecr.outputs.registry }}/freshbox-${{ matrix.service }}:${{ github.sha }}-${{ github.run_number }}
           docker build -t $IMAGE_TAG ${{ matrix.context }}
           docker push $IMAGE_TAG
 
@@ -190,7 +267,22 @@ jobs:
           for s in frontend get-products create-product update-product delete-product; do
             kubectl apply -f k8s/$s-deployment.yaml
             kubectl set image deployment/$s \
-              $s=${{ steps.login-ecr.outputs.registry }}/freshbox-$s:${{ github.sha }} \
+              $s=${{ steps.login-ecr.outputs.registry }}/freshbox-$s:${{ github.sha }}-${{ github.run_number }} \
               -n freshbox
           done
           kubectl rollout status deployment -n freshbox --timeout=180s || true
+
+      - name: Diagnóstico K8s (si algo falló)
+        if: failure()
+        run: |
+          echo "=========== NODES ==========="
+          kubectl get nodes -o wide || true
+          echo "=========== PODS ==========="
+          kubectl get pods -n freshbox -o wide || true
+          echo "=========== DESCRIBE PODS ==========="
+          kubectl describe pods -n freshbox || true
+          echo "=========== EVENTS ==========="
+          kubectl get events -n freshbox --sort-by=.lastTimestamp || true
+          echo "=========== LOGS ==========="
+          kubectl logs -n freshbox --all-containers=true --tail=50 \
+            -l 'app in (frontend,get-products,create-product,update-product,delete-product)' || true
