@@ -8,7 +8,6 @@ data "aws_availability_zones" "available" {
 }
 
 data "aws_caller_identity" "current" {}
-data "aws_region" "current" {}
 
 resource "aws_vpc" "freshbox_vpc" {
   cidr_block           = "10.0.0.0/16"
@@ -70,6 +69,7 @@ resource "aws_s3_bucket_versioning" "flow_logs" {
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "flow_logs" {
+  # checkov:skip=CKV_AWS_145: Sin KMS en el Learner Lab (se usa SSE-S3)
   bucket = aws_s3_bucket.flow_logs.id
   rule {
     apply_server_side_encryption_by_default {
@@ -129,9 +129,6 @@ resource "aws_s3_bucket_policy" "flow_logs" {
             "aws:SourceAccount" = data.aws_caller_identity.current.account_id
             "s3:x-amz-acl"      = "bucket-owner-full-control"
           }
-          ArnLike = {
-            "aws:SourceArn" = "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:*"
-          }
         }
       },
       {
@@ -143,9 +140,6 @@ resource "aws_s3_bucket_policy" "flow_logs" {
         Condition = {
           StringEquals = {
             "aws:SourceAccount" = data.aws_caller_identity.current.account_id
-          }
-          ArnLike = {
-            "aws:SourceArn" = "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:*"
           }
         }
       }
