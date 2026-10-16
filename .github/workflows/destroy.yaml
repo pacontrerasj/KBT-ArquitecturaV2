@@ -1,0 +1,116 @@
+name: Destroy Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Escribe DESTROY para confirmar la destrucción de la infraestructura'
+        required: true
+        default: ''
+      delete_state_bucket:
+        description: 'También borrar el bucket de state de Terraform (freshbox-tfstate-*)'
+        type: boolean
+        default: false
+
+# Mismo grupo que el pipeline: evita que el destroy corra mientras hay un deploy en curso
+concurrency:
+  group: freshbox-cicd
+  cancel-in-progress: false
+
+jobs:
+  destroy:
+    # Salvaguarda: el job solo corre si se escribe exactamente DESTROY
+    if: github.event.inputs.confirm == 'DESTROY'
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: us-east-1
+      TF_IN_AUTOMATION: "true"
+      TF_CLI_ARGS: "-no-color"
+    steps:
+      - uses: actions/checkout@v3
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verificar credenciales AWS (falla rápido si el token expiró)
+        run: aws sts get-caller-identity
+
+      - name: Localizar backend de Terraform (S3)
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "TF_BACKEND_BUCKET=freshbox-tfstate-${ACCOUNT_ID}" >> "$GITHUB_ENV"
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: |
+          terraform init \
+            -backend-config="bucket=${TF_BACKEND_BUCKET}" \
+            -backend-config="region=${AWS_REGION}"
+
+      # RDS tiene deletion_protection = true: hay que quitarla antes del destroy
+      - name: Desactivar deletion_protection de RDS
+        run: |
+          for db in $(aws rds describe-db-instances \
+            --query "DBInstances[?starts_with(DBInstanceIdentifier,'terraform-')].DBInstanceIdentifier" \
+            --output text); do
+            echo "Desactivando deletion_protection en '$db'"
+            aws rds modify-db-instance --db-instance-identifier "$db" \
+              --no-deletion-protection --apply-immediately >/dev/null
+          done
+
+      # Los repos ECR son IMMUTABLE y con imágenes: el destroy usa el estado previo
+      # (force_delete=false), así que los vaciamos/borramos antes para evitar el error.
+      - name: Vaciar repos ECR (IMMUTABLE con imágenes)
+        run: |
+          for s in get-products create-product update-product delete-product frontend; do
+            aws ecr delete-repository --repository-name "freshbox-$s" --force 2>/dev/null \
+              && echo "ECR 'freshbox-$s' eliminado" || echo "ECR 'freshbox-$s' ya no existe"
+          done
+
+      - name: Terraform Destroy
+        id: destroy
+        working-directory: terraform
+        continue-on-error: true
+        run: terraform destroy -auto-approve -input=false
+
+      - name: Diagnóstico del destroy (si falló)
+        if: steps.destroy.outcome == 'failure'
+        working-directory: terraform
+        run: |
+          echo "=========== terraform state list ==========="
+          terraform state list || true
+          echo "=========== EKS ==========="
+          aws eks describe-cluster --name freshbox-eks \
+            --query 'cluster.{status:status,health:health}' 2>&1 || true
+          echo "=========== RDS ==========="
+          aws rds describe-db-instances \
+            --query 'DBInstances[].{id:DBInstanceIdentifier,status:DBInstanceStatus}' \
+            --output table 2>&1 || true
+          echo "=========== errored.tfstate ==========="
+          ls -la errored.tfstate 2>/dev/null || echo "sin errored.tfstate"
+
+      - name: Subir errored.tfstate (si existe)
+        if: steps.destroy.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: destroy-errored-tfstate
+          path: terraform/errored.tfstate
+          if-no-files-found: ignore
+
+      - name: Fallar el job si el destroy falló
+        if: steps.destroy.outcome == 'failure'
+        run: exit 1
+
+      # Opcional: deja el laboratorio totalmente limpio (borra state y bucket del state)
+      - name: Borrar bucket de state (opcional)
+        if: github.event.inputs.delete_state_bucket == 'true'
+        run: |
+          echo "Vaciando y borrando s3://${TF_BACKEND_BUCKET}"
+          aws s3 rm "s3://${TF_BACKEND_BUCKET}" --recursive
+          aws s3api delete-bucket --bucket "${TF_BACKEND_BUCKET}" --region "${AWS_REGION}"
