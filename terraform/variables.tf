@@ -18,3 +18,9 @@ variable "db_multi_az" {
   type        = bool
   default     = false
 }
+
+variable "alb_dns" {
+  description = "DNS del ALB de EKS. Se inyecta en el segundo apply del pipeline."
+  type        = string
+  default     = ""
+}

@@ -15,7 +15,19 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
+      - uses: hashicorp/setup-terraform@v3
       - uses: terraform-linters/setup-tflint@v3
+
+      - name: Terraform format check
+        run: terraform fmt -check -recursive
+        working-directory: terraform
+
+      - name: Terraform init and validate (sin backend)
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+        working-directory: terraform
+
       - name: Init TFLint
         run: tflint --init
         working-directory: terraform
@@ -42,6 +54,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       rds_endpoint: ${{ steps.tf_outputs.outputs.rds_endpoint }}
+      vpc_id: ${{ steps.tf_outputs.outputs.vpc_id }}
     env:
       AWS_REGION: us-east-1
       TF_IN_AUTOMATION: "true"
@@ -61,6 +74,14 @@ jobs:
 
       - name: Verificar credenciales AWS (falla rápido si el token expiró)
         run: aws sts get-caller-identity
+
+      - name: Empaquetar Lambdas con dependencias
+        run: |
+          mkdir -p build/lambdas
+          for d in Freshbox/lambdas/*; do
+            echo "Empaquetando $d"
+            (cd "$d" && npm install --omit=dev --no-package-lock --silent)
+          done
 
       - name: Bootstrap Terraform backend (S3)
         run: |
@@ -123,10 +144,19 @@ jobs:
             done
           fi
 
+          # --- Frontend ECR obsoleto (EP3 lo publica en S3) ---
+          # Si estaba en el state, se elimina del state para que Terraform no
+          # intente destruir un repo IMMUTABLE que puede tener imagenes.
+          if aws ecr describe-repositories --repository-names freshbox-frontend >/dev/null 2>&1; then
+            echo "::warning::ECR 'freshbox-frontend' obsoleto; eliminando"
+            aws ecr delete-repository --repository-name freshbox-frontend --force || true
+          fi
+          terraform state rm 'module.ecr.aws_ecr_repository.repo["frontend"]' 2>/dev/null || true
+
           # --- ECR en cifrado viejo (AES256) pendiente de KMS ---
           # Un repo con imagenes no se puede "reemplazar" (el destroy usa el estado
           # previo con force_delete=false). Se borra para que Terraform lo RECREE limpio.
-          for s in get-products create-product update-product delete-product frontend; do
+          for s in get-products create-product update-product delete-product; do
             enc=$(aws ecr describe-repositories --repository-names "freshbox-$s" \
               --query 'repositories[0].encryptionConfiguration.encryptionType' \
               --output text 2>/dev/null || true)
@@ -139,7 +169,7 @@ jobs:
       - name: Adoptar repos ECR existentes (idempotente)
         working-directory: terraform
         run: |
-          for s in get-products create-product update-product delete-product frontend; do
+          for s in get-products create-product update-product delete-product; do
             addr="module.ecr.aws_ecr_repository.repo[\"$s\"]"
             if aws ecr describe-repositories --repository-names "freshbox-$s" >/dev/null 2>&1; then
               if ! terraform state list | grep -qF "$addr"; then
@@ -185,7 +215,9 @@ jobs:
       - name: Terraform Outputs
         id: tf_outputs
         working-directory: terraform
-        run: echo "rds_endpoint=$(terraform output -raw rds_endpoint)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "rds_endpoint=$(terraform output -raw rds_endpoint)" >> "$GITHUB_OUTPUT"
+          echo "vpc_id=$(terraform output -raw vpc_id)" >> "$GITHUB_OUTPUT"
 
   # 3. Construye, escanea y publica las imagenes en ECR
   build-and-push:
@@ -204,8 +236,6 @@ jobs:
             context: Freshbox/microserviciosEKSBackend/update-product
           - service: delete-product
             context: Freshbox/microserviciosEKSBackend/delete-product
-          - service: frontend
-            context: Freshbox/microservicioEKSFrontend
     steps:
       - uses: actions/checkout@v3
 
@@ -236,9 +266,12 @@ jobs:
   deploy:
     needs: [terraform, build-and-push]
     runs-on: ubuntu-latest
+    outputs:
+      alb_dns: ${{ steps.alb.outputs.dns }}
     env:
       AWS_REGION: us-east-1
       DB_HOST: ${{ needs.terraform.outputs.rds_endpoint }}
+      VPC_ID: ${{ needs.terraform.outputs.vpc_id }}
     steps:
       - uses: actions/checkout@v3
 
@@ -257,6 +290,24 @@ jobs:
       - name: Update Kubeconfig
         run: aws eks update-kubeconfig --name freshbox-eks --region ${{ env.AWS_REGION }}
 
+      - name: Instalar AWS Load Balancer Controller
+        uses: azure/setup-helm@v4
+      - name: Configurar AWS Load Balancer Controller
+        run: |
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo update
+          kubectl create serviceaccount aws-load-balancer-controller -n kube-system \
+            --dry-run=client -o yaml | kubectl apply -f -
+          helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+            -n kube-system \
+            --set clusterName=freshbox-eks \
+            --set serviceAccount.create=false \
+            --set serviceAccount.name=aws-load-balancer-controller \
+            --set region=${AWS_REGION} \
+            --set vpcId=${VPC_ID}
+          kubectl rollout status deployment/aws-load-balancer-controller \
+            -n kube-system --timeout=300s
+
       - name: Apply namespace, configmap and secret
         env:
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
@@ -271,22 +322,52 @@ jobs:
             --from-literal=DB_USER=alumno \
             --from-literal=DB_PASS="${DB_PASSWORD}" \
             --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create configmap freshbox-db-init-sql -n freshbox \
+            --from-file=init.sql=sql/init.sql \
+            --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Apply network policy, HPA and ingress
+      - name: Quitar frontend de EKS
+        run: |
+          kubectl delete deployment frontend -n freshbox --ignore-not-found
+          kubectl delete service frontend -n freshbox --ignore-not-found
+
+      - name: Apply network policy and HPA
         run: |
           kubectl apply -f k8s/network-policy.yaml
           kubectl apply -f k8s/hpa.yaml
-          kubectl apply -f k8s/ingress.yaml
 
-      - name: Deploy services
+      - name: Deploy 4 backends
         run: |
-          for s in frontend get-products create-product update-product delete-product; do
+          for s in get-products create-product update-product delete-product; do
             kubectl apply -f k8s/$s-deployment.yaml
             kubectl set image deployment/$s \
               $s=${{ steps.login-ecr.outputs.registry }}/freshbox-$s:${{ github.sha }}-${{ github.run_number }} \
               -n freshbox
           done
-          kubectl rollout status deployment -n freshbox --timeout=180s || true
+          for s in get-products create-product update-product delete-product; do
+            kubectl rollout status deployment/$s -n freshbox --timeout=300s
+          done
+
+      - name: Apply ALB Ingress
+        run: kubectl apply -f k8s/ingress.yaml
+
+      - name: Esperar DNS del ALB
+        id: alb
+        run: |
+          ALB_DNS=""
+          for i in $(seq 1 60); do
+            ALB_DNS=$(kubectl get ingress freshbox-ingress -n freshbox \
+              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+            if [ -n "$ALB_DNS" ]; then break; fi
+            sleep 10
+          done
+          if [ -z "$ALB_DNS" ]; then
+            kubectl describe ingress freshbox-ingress -n freshbox || true
+            kubectl get events -n freshbox --sort-by=.lastTimestamp | tail -30 || true
+            exit 1
+          fi
+          echo "dns=$ALB_DNS" >> "$GITHUB_OUTPUT"
+          echo "ALB DNS: $ALB_DNS"
 
       - name: Diagnóstico K8s (si algo falló)
         if: failure()
@@ -297,8 +378,171 @@ jobs:
           kubectl get pods -n freshbox -o wide || true
           echo "=========== DESCRIBE PODS ==========="
           kubectl describe pods -n freshbox || true
+          echo "=========== INGRESS ==========="
+          kubectl describe ingress -n freshbox || true
           echo "=========== EVENTS ==========="
           kubectl get events -n freshbox --sort-by=.lastTimestamp || true
           echo "=========== LOGS ==========="
           kubectl logs -n freshbox --all-containers=true --tail=50 \
-            -l 'app in (frontend,get-products,create-product,update-product,delete-product)' || true
+            -l 'app in (get-products,create-product,update-product,delete-product)' || true
+
+  # 5. Cierra API Gateway -> ALB, publica frontend en S3 e inicializa MySQL
+  finalize:
+    needs: [terraform, build-and-push, deploy]
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: us-east-1
+      TF_IN_AUTOMATION: "true"
+      TF_CLI_ARGS: "-no-color"
+      TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+      ALB_DNS: ${{ needs.deploy.outputs.alb_dns }}
+    steps:
+      - uses: actions/checkout@v3
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verificar credenciales AWS
+        run: aws sts get-caller-identity
+
+      - name: Bootstrap Terraform backend (S3)
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          BUCKET="freshbox-ep3-tfstate-${ACCOUNT_ID}"
+          if ! aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+            aws s3api create-bucket --bucket "$BUCKET" --region "$AWS_REGION"
+          fi
+          echo "TF_BACKEND_BUCKET=$BUCKET" >> "$GITHUB_ENV"
+
+      - name: Empaquetar Lambdas con dependencias
+        run: |
+          mkdir -p build/lambdas
+          for d in Freshbox/lambdas/*; do
+            (cd "$d" && npm install --omit=dev --no-package-lock --silent)
+          done
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: |
+          terraform init \
+            -backend-config="bucket=${TF_BACKEND_BUCKET}" \
+            -backend-config="region=${AWS_REGION}"
+
+      - name: Terraform Apply con ALB DNS
+        working-directory: terraform
+        run: terraform apply -auto-approve -input=false -var="alb_dns=${ALB_DNS}"
+
+      - name: Obtener URL de API Gateway
+        id: api
+        working-directory: terraform
+        run: echo "url=$(terraform output -raw api_invoke_url)" >> "$GITHUB_OUTPUT"
+
+      - name: Crear y configurar bucket S3 del frontend
+        env:
+          API_URL: ${{ steps.api.outputs.url }}
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          BUCKET="freshbox-frontend-${ACCOUNT_ID}"
+          echo "S3_BUCKET=$BUCKET" >> "$GITHUB_ENV"
+
+          if ! aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+            aws s3api create-bucket --bucket "$BUCKET" --region "$AWS_REGION"
+          fi
+          aws s3api put-public-access-block --bucket "$BUCKET" \
+            --public-access-block-configuration \
+            BlockPublicAcls=false,IgnorePublicAcls=false,BlockPublicPolicy=false,RestrictPublicBuckets=false
+          aws s3api put-bucket-versioning --bucket "$BUCKET" \
+            --versioning-configuration Status=Enabled
+          aws s3api put-bucket-encryption --bucket "$BUCKET" \
+            --server-side-encryption-configuration \
+            '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+          aws s3 website "s3://${BUCKET}" \
+            --index-document index.html --error-document index.html
+
+          cat > /tmp/freshbox-frontend-policy.json <<EOF
+          {
+            "Version": "2012-10-17",
+            "Statement": [{
+              "Sid": "PublicReadGetObject",
+              "Effect": "Allow",
+              "Principal": "*",
+              "Action": "s3:GetObject",
+              "Resource": "arn:aws:s3:::${BUCKET}/*"
+            }]
+          }
+          EOF
+          aws s3api put-bucket-policy --bucket "$BUCKET" \
+            --policy file:///tmp/freshbox-frontend-policy.json
+
+          rm -rf /tmp/freshbox-frontend
+          cp -r Freshbox/microservicioEKSFrontend /tmp/freshbox-frontend
+          printf 'window.FRESHBOX_API_BASE = "%s";\n' "$API_URL" \
+            > /tmp/freshbox-frontend/js/config.js
+          aws s3 sync /tmp/freshbox-frontend "s3://${BUCKET}" --delete \
+            --exclude "Dockerfile" --exclude "nginx.conf"
+
+          FRONTEND_URL="http://${BUCKET}.s3-website-${AWS_REGION}.amazonaws.com"
+          echo "FRONTEND_URL=$FRONTEND_URL" >> "$GITHUB_ENV"
+          {
+            echo "### FreshBox EP3"
+            echo "- API Gateway: $API_URL"
+            echo "- Frontend S3: $FRONTEND_URL"
+            echo "- RDS: ${{ needs.terraform.outputs.rds_endpoint }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Inicializar MySQL con init.sql
+        run: |
+          aws eks update-kubeconfig --name freshbox-eks --region "$AWS_REGION"
+          kubectl create configmap freshbox-db-init-sql -n freshbox \
+            --from-file=init.sql=sql/init.sql \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl delete job freshbox-db-init -n freshbox --ignore-not-found
+          kubectl apply -f k8s/db-init-job.yaml
+          if ! kubectl wait --for=condition=complete job/freshbox-db-init \
+               -n freshbox --timeout=600s; then
+            kubectl describe job freshbox-db-init -n freshbox || true
+            kubectl logs job/freshbox-db-init -n freshbox --tail=100 || true
+            exit 1
+          fi
+
+      - name: Pruebas end-to-end
+        env:
+          API_URL: ${{ steps.api.outputs.url }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            if curl -fsS "$API_URL/api/products" > /tmp/products.json; then break; fi
+            sleep 10
+          done
+          cat /tmp/products.json
+          test "$(jq 'length' /tmp/products.json)" -ge 1
+
+          USER_ID="ci-$(date +%s)"
+          curl -fsS -X POST "$API_URL/api/cart" \
+            -H 'Content-Type: application/json' \
+            -d "{\"userId\":\"$USER_ID\",\"productId\":\"1\",\"nombre\":\"Manzana organica\",\"precio\":990,\"cantidad\":1}" \
+            > /tmp/cart-create.json
+          cat /tmp/cart-create.json
+          curl -fsS "$API_URL/api/cart?userId=$USER_ID" > /tmp/cart.json
+          cat /tmp/cart.json
+          test "$(jq '.items | length' /tmp/cart.json)" -eq 1
+
+          curl -fsS -X POST "$API_URL/api/orders" \
+            -H 'Content-Type: application/json' \
+            -d "{\"userId\":\"$USER_ID\"}" > /tmp/order.json
+          cat /tmp/order.json
+          jq -e '.orderId and .total' /tmp/order.json >/dev/null
+
+          for i in $(seq 1 20); do
+            curl -fsS "$API_URL/api/cart?userId=$USER_ID" > /tmp/cart-after.json
+            if [ "$(jq '.items | length' /tmp/cart-after.json)" -eq 0 ]; then break; fi
+            sleep 5
+          done
+          cat /tmp/cart-after.json
+          test "$(jq '.items | length' /tmp/cart-after.json)" -eq 0

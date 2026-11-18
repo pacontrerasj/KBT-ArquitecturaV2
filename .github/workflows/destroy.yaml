@@ -11,6 +11,10 @@ on:
         description: 'También borrar el bucket de state de Terraform (freshbox-ep3-tfstate-*)'
         type: boolean
         default: false
+      delete_frontend_bucket:
+        description: 'También borrar el bucket S3 del frontend (freshbox-frontend-*)'
+        type: boolean
+        default: true
 
 # Mismo grupo que el pipeline: evita que el destroy corra mientras hay un deploy en curso
 concurrency:
@@ -69,7 +73,7 @@ jobs:
       # (force_delete=false), así que los vaciamos/borramos antes para evitar el error.
       - name: Vaciar repos ECR (IMMUTABLE con imágenes)
         run: |
-          for s in get-products create-product update-product delete-product frontend; do
+          for s in get-products create-product update-product delete-product; do
             aws ecr delete-repository --repository-name "freshbox-$s" --force 2>/dev/null \
               && echo "ECR 'freshbox-$s' eliminado" || echo "ECR 'freshbox-$s' ya no existe"
           done
@@ -107,6 +111,19 @@ jobs:
       - name: Fallar el job si el destroy falló
         if: steps.destroy.outcome == 'failure'
         run: exit 1
+
+      - name: Borrar bucket S3 del frontend (opcional)
+        if: github.event.inputs.delete_frontend_bucket == 'true'
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          BUCKET="freshbox-frontend-${ACCOUNT_ID}"
+          if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+            echo "Vaciando y borrando s3://${BUCKET}"
+            aws s3 rm "s3://${BUCKET}" --recursive
+            aws s3api delete-bucket --bucket "$BUCKET" --region "${AWS_REGION}"
+          else
+            echo "Bucket ${BUCKET} no existe"
+          fi
 
       # Opcional: deja el laboratorio totalmente limpio (borra state y bucket del state)
       - name: Borrar bucket de state (opcional)

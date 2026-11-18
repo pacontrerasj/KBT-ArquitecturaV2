@@ -1,0 +1,74 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: freshbox-db-init
+  namespace: freshbox
+  labels:
+    app: freshbox-db-init
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app: freshbox-db-init
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: mysql
+        image: mysql:8.4
+        command: ["sh", "-c"]
+        args:
+          - mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" "$DB_NAME" < /sql/init.sql
+        env:
+        - name: HOME
+          value: /tmp
+        - name: DB_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: freshbox-config
+              key: DB_HOST
+        - name: DB_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: freshbox-config
+              key: DB_NAME
+        - name: DB_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: freshbox-config
+              key: DB_PORT
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: freshbox-secret
+              key: DB_USER
+        - name: MYSQL_PWD
+          valueFrom:
+            secretKeyRef:
+              name: freshbox-secret
+              key: DB_PASS
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        volumeMounts:
+        - name: sql
+          mountPath: /sql
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: sql
+        configMap:
+          name: freshbox-db-init-sql
+      - name: tmp
+        emptyDir: {}

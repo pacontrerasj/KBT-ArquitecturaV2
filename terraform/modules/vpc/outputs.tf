@@ -26,3 +26,7 @@ output "private_route_table_id" {
 output "dynamodb_vpc_endpoint_id" {
   value = aws_vpc_endpoint.dynamodb.id
 }
+
+output "dynamodb_prefix_list_id" {
+  value = aws_vpc_endpoint.dynamodb.prefix_list_id
+}

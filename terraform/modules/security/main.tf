@@ -44,6 +44,16 @@ resource "aws_security_group_rule" "lambda_to_rds" {
   source_security_group_id = aws_security_group.db_sg.id
 }
 
+resource "aws_security_group_rule" "lambda_to_dynamodb" {
+  description       = "HTTPS al endpoint Gateway de DynamoDB"
+  type              = "egress"
+  from_port         = 443
+  to_port           = 443
+  protocol          = "tcp"
+  security_group_id = aws_security_group.lambda_sg.id
+  prefix_list_ids   = [var.dynamodb_prefix_list_id]
+}
+
 resource "aws_security_group_rule" "lambda_dns_udp" {
   description       = "DNS de la VPC (UDP)"
   type              = "egress"
@@ -70,3 +80,4 @@ output "lambda_sg_id" { value = aws_security_group.lambda_sg.id }
 variable "vpc_id" { type = string }
 variable "vpc_cidr" { type = string }
 variable "eks_security_group_id" { type = string }
+variable "dynamodb_prefix_list_id" { type = string }

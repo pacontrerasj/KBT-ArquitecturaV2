@@ -1,32 +1,155 @@
-# FreshBox: Arquitectura K8s de Alta Disponibilidad
+# FreshBox EP3: Arquitectura Hibrida EKS + Serverless
 
-## Nota del Arquitecto (Pablo)
-Como Arquitecto Líder de este proyecto, mi objetivo ha sido transformar la infraestructura monolítica de FreshBox en un ecosistema basado en microservicios resilientes, escalables y seguros sobre Kubernetes (EKS). Esta migración no es solo un cambio tecnológico; es una evolución hacia una arquitectura preparada para el crecimiento acelerado, manteniendo la seguridad como pilar fundamental a pesar de las restricciones del entorno de laboratorio.
+FreshBox evoluciona de una plataforma EKS (EP2) a una arquitectura hibrida en AWS: los productos siguen en microservicios sobre EKS y el carrito/ordenes se procesan con Lambda, API Gateway, DynamoDB y SQS. El frontend se publica como sitio estatico en S3.
 
-## Resumen de Diseño
-- **Evolución:** Hemos pasado de una arquitectura basada en EC2 (Prueba 1) a una orquestada por Kubernetes (Prueba 2), permitiendo auto-escalado horizontal (HPA) basado en demanda real de CPU.
-- **Alta Disponibilidad:** Despliegue distribuido en múltiples zonas de disponibilidad, garantizando que el servicio persista ante fallos de infraestructura.
-- **Seguridad "Defense in Depth":** 
-    - **Aislamiento de red:** Implementación de `NetworkPolicies` (Deny-All) para reducir la superficie de ataque.
-    - **Cadena de suministro:** Integración de `Trivy` en CI/CD para escanear vulnerabilidades en imágenes antes de cualquier despliegue.
-    - **Gestión de estado:** Uso de S3 + DynamoDB para garantizar integridad en los despliegues de infraestructura.
+## Arquitectura
 
-## Estructura del Repositorio
-- `Freshbox/`: Código fuente de microservicios (Backend y Frontend).
-- `k8s/`: Definiciones de despliegue, HPA, NetworkPolicies e Ingress.
-- `terraform/`: Infraestructura como Código (IaC) modularizada (VPC, EKS, RDS, ECR).
+```text
+Navegador
+   |
+   +--> S3 (frontend estatico)
+   |
+   +--> API Gateway (REST, stage prod)
+          |
+          +--> /api/products* ----------> ALB -> EKS (4 microservicios) -> RDS MySQL
+          |
+          +--> /api/cart* --------------> Lambda procesar-carrito -> DynamoDB
+          |
+          +--> /api/orders ------------> Lambda crear-orden -> DynamoDB + SQS
+                                                               |
+                                                               v
+                                                    Lambda procesar-orden
+                                                    -> RDS MySQL
+                                                    -> limpia DynamoDB
+```
 
-## Escenarios de Despliegue: Producción vs. Laboratorio
-Este repositorio contiene una arquitectura de nivel profesional (Producción). Sin embargo, para permitir su despliegue exitoso en entornos limitados como **AWS Learner Lab**, he aplicado las siguientes consideraciones:
+### Componentes
 
-1. **Configuración de Seguridad Avanzada (Comentada):**
-   - Recursos como `KMS Keys` (Cifrado de Secrets en EKS) y `VPC Flow Logs` (Auditoría de red) están presentes en el código pero comentados. 
-   - *Justificación:* Estos recursos requieren privilegios elevados de IAM (`iam:CreateRole`, `kms:CreateKey`) que suelen estar restringidos en cuentas de estudiante.
-   - *Modo Producción:* Para llevar esto a un entorno empresarial real, simplemente descomenta los bloques de código marcados como "CONFIGURACIÓN PRO" y asegúrate de que el Service Account del pipeline tenga los permisos IAM necesarios.
+- **EKS**: get-products, create-product, update-product, delete-product. Servicios `NodePort`; el ALB los expone con `target-type: instance`.
+- **API Gateway**: 8 rutas requeridas por la guia + `GET /api/products/{id}` adicional, con CORS. Los productos se integran por `HTTP_PROXY` al ALB; carrito y ordenes por `AWS_PROXY` a Lambda.
+- **Lambdas**:
+  - `freshbox-procesar-carrito`: GET/POST/DELETE del carrito en DynamoDB.
+  - `freshbox-crear-orden`: lee el carrito, calcula total y publica en SQS.
+  - `freshbox-procesar-orden`: consumer SQS, inserta en MySQL y limpia el carrito.
+- **DynamoDB**: tabla `carrito-freshbox`, PK `userId`, SK `productId`, TTL.
+- **SQS**: cola de ordenes con DLQ y redrive.
+- **RDS MySQL**: `productos` y `ordenes`; la inicializacion se ejecuta con un Job de Kubernetes.
+- **S3**: `freshbox-frontend-<ACCOUNT_ID>`, sitio web estatico. El pipeline inyecta la URL de API Gateway en `js/config.js`.
 
-2. **Justificación de Riesgos:**
-   - He priorizado la viabilidad del despliegue (asegurando que el pipeline de GitHub Actions funcione) sobre la implementación de logs de auditoría profundos, manteniendo el resto de las capas de seguridad (Trivy, Checkov, NetworkPolicies) totalmente operativas.
+## Estructura
 
+```text
+Freshbox/
+  lambdas/                    # 3 funciones Lambda y sus dependencias
+  microserviciosEKSBackend/   # 4 microservicios de productos
+  microservicioEKSFrontend/   # frontend estatico para S3
+k8s/                          # Deployments, Services, Ingress, HPA, NetworkPolicy y Job SQL
+terraform/
+  modules/vpc/                # VPC, subnets, endpoints, tags ALB
+  modules/eks/                # Cluster y node group
+  modules/rds/                # MySQL privado
+  modules/ecr/                # Repos de las 4 imagenes backend
+  modules/dynamodb/           # Carrito
+  modules/messaging/          # SQS + DLQ
+  modules/serverless/         # Lambdas, API Gateway, CORS y trigger SQS
+sql/init.sql                  # Esquema y datos de demostracion
+```
+
+## Pipeline
+
+`.github/workflows/pipeline.yaml` se ejecuta en `push` a `main` y tiene 5 etapas:
+
+1. **lint-and-validate**: TFLint, Checkov y validacion de YAML.
+2. **terraform**: empaqueta Lambdas, aprovisiona infraestructura y publica `rds_endpoint` y `vpc_id`.
+3. **build-and-push**: construye y escanea las 4 imagenes backend; ya no construye frontend.
+4. **deploy**: instala AWS Load Balancer Controller, aplica manifiestos, elimina el frontend de EKS y espera el DNS del ALB.
+5. **finalize**: segundo `terraform apply` con `alb_dns`, publica el frontend en S3, ejecuta el Job SQL y hace pruebas end-to-end.
+
+### Por que dos applies
+
+El ALB lo crea el AWS Load Balancer Controller a partir del Ingress, por lo que su DNS no existe en el primer apply. API Gateway se crea apuntando a un placeholder y el job `finalize` lo actualiza con el DNS real. El trigger de `aws_api_gateway_deployment` incluye `alb_dns` para forzar el redeploy.
+
+## Despliegue
+
+### Requisitos
+
+- Cuenta AWS Academy Learner Lab con `LabRole`.
+- Secretos del repositorio:
+  - `AWS_ACCESS_KEY_ID`
+  - `AWS_SECRET_ACCESS_KEY`
+  - `AWS_SESSION_TOKEN`
+  - `DB_PASSWORD` (8-41 caracteres, sin `/`, `"`, `@` ni espacios)
+
+Las credenciales de Learner Lab expiran. Si el pipeline falla en `aws sts get-caller-identity`, actualiza los tres secretos de AWS.
+
+### Ejecucion
+
+1. Hacer merge a `main` o lanzar el workflow manualmente.
+2. Revisar el resumen del run: URLs de API Gateway, frontend S3 y endpoint RDS.
+3. Verificar los recursos en la consola AWS.
+4. Guardar evidencias: RDS, Lambda, API Gateway, SQS, DynamoDB, bucket S3 y pruebas de carrito/orden.
+
+### Validacion local
+
+```bash
+cd terraform
+terraform fmt -recursive
+terraform init -backend=false
+terraform validate
+tflint
+
+cd ..
+python3 -c "import yaml; yaml.safe_load(open('.github/workflows/pipeline.yaml'))"
+kubectl apply --dry-run=client --validate=false -f k8s/
+```
+
+No ejecutar `terraform apply` ni `destroy` localmente: el pipeline es el unico responsable de modificar AWS.
+
+## Endpoints
+
+Con el stage `prod`:
+
+- `GET /api/products`
+- `POST /api/products`
+- `GET /api/products/{id}` (adicional, no contado en las 8 rutas de la guia)
+- `PUT /api/products/{id}`
+- `DELETE /api/products/{id}`
+- `GET /api/cart?userId=...`
+- `POST /api/cart`
+- `DELETE /api/cart/{productId}?userId=...`
+- `POST /api/orders`
+
+## Seguridad y restricciones del laboratorio
+
+- **LabRole**: el Learner Lab restringe `iam:CreateRole`; las Lambdas usan `LabRole`. En produccion se debe inyectar `lambda_role_arn` con roles de minimo privilegio por funcion.
+- **S3 por CLI**: el proveedor de Terraform no puede leer buckets por una restriccion de `s3:GetBucketObjectLockConfiguration`; el pipeline crea y configura el bucket con AWS CLI.
+- **Sin NAT Gateway**: Process-Order corre en subnets privadas y usa el VPC endpoint de DynamoDB; RDS es privado. Cart y Create-Order corren fuera de la VPC.
+- **NetworkPolicy**: default-deny; se permite DNS, MySQL y trafico entre pods. El ALB en modo `instance` conserva el origen dentro de la VPC.
+- **RDS**: `MultiAZ=false` y `gp2` en el lab. En produccion usar `db_multi_az=true`, `gp3` y una clase adecuada.
+- **Imagenes**: el pipeline construye `linux/amd64` para los nodos `t3.medium`. El script `scripts/ecr-push.sh` de la carpeta padre compila `arm64` y no debe usarse.
+
+## Diferencias con la guia docente
+
+- La guia sugiere VPC `/22`; el proyecto usa `/16` para mantener el rango existente de EP2.
+- La guia sugiere EKS en subnets privadas; el proyecto mantiene los nodos en subnets publicas para evitar NAT Gateway en Learner Lab.
+- La guia sugiere `db.t4g.small`; el proyecto usa `db.t3.micro` por disponibilidad/costo en el lab. `db_multi_az` queda como variable.
+- Se usan 3 Lambdas y 8 rutas, igual que la guia, pero los roles son `LabRole` por restriccion de IAM.
+
+## Destruccion
+
+El workflow `Destroy Infrastructure` elimina Terraform, ECR y, por defecto, el bucket S3 del frontend. El bucket de state se conserva salvo que se marque `delete_state_bucket`.
+
+## Evidencias recomendadas
+
+- `aws rds describe-db-instances` con RDS privado y disponible.
+- `aws lambda list-functions` con las 3 funciones.
+- `aws apigateway get-rest-apis` y URL del stage `prod`.
+- `aws sqs get-queue-attributes` y DLQ.
+- `aws dynamodb describe-table`.
+- `aws s3 ls` y URL del sitio.
+- Flujo E2E: agregar al carrito, crear orden y verificar que el carrito queda vacio.
+- Run de GitHub Actions en verde con los jobs `terraform`, `deploy` y `finalize`.
 
 ---
-*Documentación técnica mantenida por Pablo, Arquitecto de Soluciones FreshBox.*
+
+Documentacion actualizada para EP3. Mantener el detalle de decisiones y restricciones al entregar.

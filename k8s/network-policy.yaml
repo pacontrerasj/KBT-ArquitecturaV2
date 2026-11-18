@@ -24,7 +24,7 @@ spec:
     ports:
     - protocol: TCP
       port: 3306
-  # Trafico entre pods del mismo namespace (frontend -> backends)
+  # Trafico entre pods del mismo namespace (API/backends)
   - to:
     - podSelector: {}
 ---

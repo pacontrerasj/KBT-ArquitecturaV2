@@ -22,3 +22,9 @@ button { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; m
 .mensaje-exito { background: #d4edda; color: #155724; }
 .mensaje-error { background: #f8d7da; color: #721c24; }
 footer { text-align: center; padding: 15px; background: #2d6a4f; color: white; margin-top: 30px; }
+
+.btn-agregar { background: #1d3557; color: white; }
+.btn-quitar { background: #e76f51; color: white; }
+.cart-summary { display: flex; justify-content: space-between; align-items: center; margin-top: 15px; font-size: 1.1em; }
+#btn-confirmar { background: #2d6a4f; color: white; font-weight: 600; }
+.muted { color: #555; }
