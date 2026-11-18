@@ -33,3 +33,35 @@ output "lambda_sg_id" {
 output "eks_cluster_name" {
   value = module.eks.cluster_name
 }
+
+output "dynamodb_table_name" {
+  value = module.dynamodb.table_name
+}
+
+output "dynamodb_table_arn" {
+  value = module.dynamodb.table_arn
+}
+
+output "sqs_queue_name" {
+  value = module.messaging.queue_name
+}
+
+output "sqs_queue_url" {
+  value = module.messaging.queue_url
+}
+
+output "sqs_queue_arn" {
+  value = module.messaging.queue_arn
+}
+
+output "sqs_dlq_name" {
+  value = module.messaging.dlq_name
+}
+
+output "sqs_dlq_url" {
+  value = module.messaging.dlq_url
+}
+
+output "sqs_dlq_arn" {
+  value = module.messaging.dlq_arn
+}

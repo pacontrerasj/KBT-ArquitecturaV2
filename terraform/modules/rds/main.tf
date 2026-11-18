@@ -12,7 +12,8 @@ resource "aws_db_instance" "default" {
   engine            = "mysql"
   instance_class    = "db.t3.micro"
   username          = "alumno"
-  password          = "alumno123"
+  password          = var.db_password
+  multi_az          = true
 
   db_subnet_group_name   = aws_db_subnet_group.default.name
   storage_encrypted      = true
@@ -29,3 +30,9 @@ resource "aws_db_instance" "default" {
 variable "security_group_id" { type = string }
 variable "vpc_id" { type = string }
 variable "subnet_ids" { type = list(string) }
+
+variable "db_password" {
+  description = "Password de RDS MySQL inyectada con TF_VAR_db_password"
+  type        = string
+  sensitive   = true
+}
