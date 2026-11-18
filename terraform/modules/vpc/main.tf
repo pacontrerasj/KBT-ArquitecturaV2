@@ -9,25 +9,34 @@ data "aws_availability_zones" "available" {
 
 resource "aws_vpc" "freshbox_vpc" {
   # checkov:skip=CKV2_AWS_11: El Learner Lab no permite crear el destino de VPC Flow Logs (SCP deniega S3/IAM)
-  cidr_block           = "10.0.0.0/16"
+  cidr_block           = var.cidr_block
   enable_dns_support   = true
   enable_dns_hostnames = true
-  tags                 = { Name = "freshbox-vpc" }
+  tags                 = { Name = var.vpc_name }
 }
 
 resource "aws_internet_gateway" "gw" {
   vpc_id = aws_vpc.freshbox_vpc.id
-  tags   = { Name = "freshbox-igw" }
+  tags   = { Name = "${var.vpc_name}-igw" }
 }
 
 resource "aws_subnet" "public" {
   # checkov:skip=CKV_AWS_130: Necesario para nodos EKS sin NAT
   count                   = 2
   vpc_id                  = aws_vpc.freshbox_vpc.id
-  cidr_block              = "10.0.${count.index}.0/24"
+  cidr_block              = cidrsubnet(var.cidr_block, 8, count.index)
   availability_zone       = data.aws_availability_zones.available.names[count.index]
   map_public_ip_on_launch = true
-  tags                    = { Name = "freshbox-public-${count.index}" }
+  tags                    = { Name = "${var.vpc_name}-public-${count.index}" }
+}
+
+resource "aws_subnet" "private" {
+  count                   = 2
+  vpc_id                  = aws_vpc.freshbox_vpc.id
+  cidr_block              = cidrsubnet(var.cidr_block, 8, count.index + 10)
+  availability_zone       = data.aws_availability_zones.available.names[count.index]
+  map_public_ip_on_launch = false
+  tags                    = { Name = "${var.vpc_name}-private-${count.index}" }
 }
 
 resource "aws_route_table" "public" {
@@ -36,13 +45,32 @@ resource "aws_route_table" "public" {
     cidr_block = "0.0.0.0/0"
     gateway_id = aws_internet_gateway.gw.id
   }
-  tags = { Name = "freshbox-public-rt" }
+  tags = { Name = "${var.vpc_name}-public-rt" }
+}
+
+resource "aws_route_table" "private" {
+  vpc_id = aws_vpc.freshbox_vpc.id
+  tags   = { Name = "${var.vpc_name}-private-rt" }
 }
 
 resource "aws_route_table_association" "public" {
   count          = 2
   subnet_id      = aws_subnet.public[count.index].id
   route_table_id = aws_route_table.public.id
+}
+
+resource "aws_route_table_association" "private" {
+  count          = 2
+  subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.private.id
+}
+
+resource "aws_vpc_endpoint" "dynamodb" {
+  vpc_id            = aws_vpc.freshbox_vpc.id
+  service_name      = "com.amazonaws.${var.aws_region}.dynamodb"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = [aws_route_table.private.id]
+  tags              = { Name = "${var.vpc_name}-dynamodb-endpoint" }
 }
 
 resource "aws_default_security_group" "default" {

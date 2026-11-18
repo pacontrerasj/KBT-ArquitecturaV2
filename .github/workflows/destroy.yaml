@@ -8,7 +8,7 @@ on:
         required: true
         default: ''
       delete_state_bucket:
-        description: 'También borrar el bucket de state de Terraform (freshbox-tfstate-*)'
+        description: 'También borrar el bucket de state de Terraform (freshbox-ep3-tfstate-*)'
         type: boolean
         default: false
 
@@ -44,7 +44,7 @@ jobs:
       - name: Localizar backend de Terraform (S3)
         run: |
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          echo "TF_BACKEND_BUCKET=freshbox-tfstate-${ACCOUNT_ID}" >> "$GITHUB_ENV"
+          echo "TF_BACKEND_BUCKET=freshbox-ep3-tfstate-${ACCOUNT_ID}" >> "$GITHUB_ENV"
 
       - name: Terraform Init
         working-directory: terraform

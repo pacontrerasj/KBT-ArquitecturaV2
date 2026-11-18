@@ -3,12 +3,17 @@ provider "aws" {
 }
 
 module "vpc" {
-  source = "./modules/vpc"
+  source     = "./modules/vpc"
+  cidr_block = "10.0.0.0/16"
+  vpc_name   = "freshbox-vpc"
+  aws_region = "us-east-1"
 }
 
 module "security" {
-  source = "./modules/security"
-  vpc_id = module.vpc.vpc_id
+  source                = "./modules/security"
+  vpc_id                = module.vpc.vpc_id
+  vpc_cidr              = module.vpc.vpc_cidr_block
+  eks_security_group_id = module.eks.cluster_security_group_id
 }
 
 module "ecr" {
