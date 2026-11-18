@@ -13,7 +13,8 @@ resource "aws_db_instance" "default" {
   instance_class    = "db.t3.micro"
   username          = "alumno"
   password          = var.db_password
-  multi_az          = true
+  multi_az          = var.db_multi_az
+  storage_type      = "gp2" # Learner Lab solo permite gp2
 
   db_subnet_group_name   = aws_db_subnet_group.default.name
   storage_encrypted      = true
@@ -35,4 +36,10 @@ variable "db_password" {
   description = "Password de RDS MySQL inyectada con TF_VAR_db_password"
   type        = string
   sensitive   = true
+}
+
+variable "db_multi_az" {
+  description = "Multi-AZ no soportado en Learner Lab; true en producción"
+  type        = bool
+  default     = false
 }
