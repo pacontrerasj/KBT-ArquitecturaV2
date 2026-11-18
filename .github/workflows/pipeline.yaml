@@ -64,7 +64,7 @@ jobs:
       - name: Bootstrap Terraform backend (S3)
         run: |
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          BUCKET="freshbox-tfstate-${ACCOUNT_ID}"
+          BUCKET="freshbox-ep3-tfstate-${ACCOUNT_ID}"
           if ! aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
             aws s3api create-bucket --bucket "$BUCKET" --region "$AWS_REGION"
           fi
