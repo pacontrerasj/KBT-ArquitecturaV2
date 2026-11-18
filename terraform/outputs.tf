@@ -65,3 +65,23 @@ output "sqs_dlq_url" {
 output "sqs_dlq_arn" {
   value = module.messaging.dlq_arn
 }
+
+output "api_invoke_url" {
+  value = module.serverless.api_invoke_url
+}
+
+output "api_id" {
+  value = module.serverless.api_id
+}
+
+output "cart_lambda_name" {
+  value = module.serverless.cart_lambda_name
+}
+
+output "create_order_lambda_name" {
+  value = module.serverless.create_order_lambda_name
+}
+
+output "process_order_lambda_name" {
+  value = module.serverless.process_order_lambda_name
+}

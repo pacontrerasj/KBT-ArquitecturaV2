@@ -75,5 +75,5 @@ spec:
   ports:
   - port: 3004
     targetPort: 3004
-  type: ClusterIP
+  type: NodePort
 

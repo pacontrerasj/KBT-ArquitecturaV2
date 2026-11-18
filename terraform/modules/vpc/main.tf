@@ -27,7 +27,11 @@ resource "aws_subnet" "public" {
   cidr_block              = cidrsubnet(var.cidr_block, 8, count.index)
   availability_zone       = data.aws_availability_zones.available.names[count.index]
   map_public_ip_on_launch = true
-  tags                    = { Name = "${var.vpc_name}-public-${count.index}" }
+  tags = {
+    Name                                 = "${var.vpc_name}-public-${count.index}"
+    "kubernetes.io/role/elb"             = "1"
+    "kubernetes.io/cluster/freshbox-eks" = "shared"
+  }
 }
 
 resource "aws_subnet" "private" {
@@ -36,7 +40,11 @@ resource "aws_subnet" "private" {
   cidr_block              = cidrsubnet(var.cidr_block, 8, count.index + 10)
   availability_zone       = data.aws_availability_zones.available.names[count.index]
   map_public_ip_on_launch = false
-  tags                    = { Name = "${var.vpc_name}-private-${count.index}" }
+  tags = {
+    Name                                 = "${var.vpc_name}-private-${count.index}"
+    "kubernetes.io/role/internal-elb"    = "1"
+    "kubernetes.io/cluster/freshbox-eks" = "shared"
+  }
 }
 
 resource "aws_route_table" "public" {
