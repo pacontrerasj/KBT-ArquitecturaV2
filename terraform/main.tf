@@ -26,6 +26,7 @@ module "rds" {
   security_group_id = module.security.db_sg_id
   subnet_ids        = module.vpc.private_subnet_ids
   db_password       = var.db_password
+  db_multi_az       = var.db_multi_az
 }
 
 module "dynamodb" {
