@@ -2,6 +2,12 @@ name: CI/CD Pipeline
 on:
   push:
     branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      replace_eks_nodes:
+        description: 'Forzar recreacion del node group de EKS (solo si no hay nodos Ready)'
+        type: boolean
+        default: false
 
 # Serializa los runs: sin lock en DynamoDB confiamos en GitHub para la exclusión mutua
 concurrency:
@@ -182,7 +188,12 @@ jobs:
         id: apply
         working-directory: terraform
         continue-on-error: true
-        run: terraform apply -auto-approve -input=false
+        run: |
+          REPLACE_ARGS=()
+          if [ "${{ github.event.inputs.replace_eks_nodes }}" = "true" ]; then
+            REPLACE_ARGS+=("-replace=module.eks.aws_eks_node_group.main")
+          fi
+          terraform apply -auto-approve -input=false "${REPLACE_ARGS[@]}"
 
       - name: Diagnóstico del apply (si falló)
         if: steps.apply.outcome == 'failure'
@@ -290,6 +301,28 @@ jobs:
       - name: Update Kubeconfig
         run: aws eks update-kubeconfig --name freshbox-eks --region ${{ env.AWS_REGION }}
 
+      - name: Esperar nodos EKS
+        run: |
+          READY_NODES=0
+          for i in $(seq 1 60); do
+            READY_NODES=$(kubectl get nodes -o json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print(sum(1 for n in d.get("items",[]) if any(c.get("type")=="Ready" and c.get("status")=="True" for c in n.get("status",{}).get("conditions",[]))))' 2>/dev/null || echo 0)
+            if [ "$READY_NODES" -ge 1 ]; then break; fi
+            sleep 10
+          done
+          if [ "$READY_NODES" -lt 1 ]; then
+            echo "No hay nodos Ready en freshbox-eks"
+            kubectl get nodes -o wide || true
+            aws eks describe-nodegroup --cluster-name freshbox-eks \
+              --nodegroup-name freshbox-nodes --region "$AWS_REGION" \
+              --query 'nodegroup.{status:status,health:health,desired:scalingConfig.desiredSize,subnets:subnets}' || true
+            aws ec2 describe-instances --region "$AWS_REGION" \
+              --filters "Name=tag:kubernetes.io/cluster/freshbox-eks,Values=owned,shared" \
+              --query 'Reservations[].Instances[].{id:InstanceId,state:State.Name,type:InstanceType,subnet:SubnetId}' \
+              --output table || true
+            exit 1
+          fi
+          kubectl get nodes -o wide
+
       - name: Instalar AWS Load Balancer Controller
         uses: azure/setup-helm@v4
       - name: Configurar AWS Load Balancer Controller
@@ -304,9 +337,21 @@ jobs:
             --set serviceAccount.create=false \
             --set serviceAccount.name=aws-load-balancer-controller \
             --set region=${AWS_REGION} \
-            --set vpcId=${VPC_ID}
+            --set vpcId=${VPC_ID} \
+            --set replicaCount=1
           kubectl rollout status deployment/aws-load-balancer-controller \
             -n kube-system --timeout=300s
+
+      - name: Diagnóstico AWS Load Balancer Controller
+        if: failure()
+        run: |
+          kubectl get pods -n kube-system \
+            -l app.kubernetes.io/name=aws-load-balancer-controller -o wide || true
+          kubectl describe pod -n kube-system \
+            -l app.kubernetes.io/name=aws-load-balancer-controller || true
+          kubectl logs -n kube-system \
+            -l app.kubernetes.io/name=aws-load-balancer-controller --tail=200 || true
+          kubectl get events -n kube-system --sort-by=.lastTimestamp | tail -50 || true
 
       - name: Apply namespace, configmap and secret
         env:

@@ -51,6 +51,10 @@ resource "aws_eks_node_group" "main" {
     max_unavailable = 1
   }
 
+  lifecycle {
+    replace_triggered_by = [aws_eks_cluster.main.id]
+  }
+
   tags = { Name = "freshbox-nodes" }
 }
 
