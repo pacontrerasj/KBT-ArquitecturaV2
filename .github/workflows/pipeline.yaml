@@ -341,6 +341,21 @@ jobs:
               --filters "Name=tag:kubernetes.io/cluster/freshbox-eks,Values=owned,shared" \
               --query 'Reservations[].Instances[].{id:InstanceId,state:State.Name,type:InstanceType,subnet:SubnetId}' \
               --output table || true
+            CLUSTER_ENDPOINT=$(aws eks describe-cluster --name freshbox-eks \
+              --region "$AWS_REGION" --query 'cluster.endpoint' --output text)
+            echo "Cluster endpoint actual: $CLUSTER_ENDPOINT"
+            for INSTANCE_ID in $(aws ec2 describe-instances --region "$AWS_REGION" \
+              --filters "Name=tag:kubernetes.io/cluster/freshbox-eks,Values=owned,shared" \
+              --query 'Reservations[].Instances[].InstanceId' --output text); do
+              echo "=========== user-data $INSTANCE_ID ==========="
+              aws ec2 describe-instance-attribute --instance-id "$INSTANCE_ID" \
+                --attribute user_data --region "$AWS_REGION" \
+                --query 'UserData.Value' --output text | base64 -d 2>/dev/null \
+                | grep -oE 'https://[A-Za-z0-9.:/-]+' | head -5 || true
+              echo "=========== console $INSTANCE_ID ==========="
+              aws ec2 get-console-output --instance-id "$INSTANCE_ID" \
+                --region "$AWS_REGION" --query 'Output' --output text 2>/dev/null | tail -80 || true
+            done
             exit 1
           fi
           kubectl get nodes -o wide
