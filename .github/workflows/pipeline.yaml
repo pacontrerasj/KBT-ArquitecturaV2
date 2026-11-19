@@ -301,6 +301,26 @@ jobs:
       - name: Update Kubeconfig
         run: aws eks update-kubeconfig --name freshbox-eks --region ${{ env.AWS_REGION }}
 
+      - name: Asegurar aws-auth de LabRole
+        run: |
+          ROLE_ARN=$(aws iam get-role --role-name LabRole --query 'Role.Arn' --output text)
+          ENTRY=$(cat <<EOF
+          - rolearn: ${ROLE_ARN}
+            username: system:node:{{EC2PrivateDNSName}}
+            groups:
+              - system:bootstrappers
+              - system:nodes
+          EOF
+          )
+          if ! kubectl get configmap aws-auth -n kube-system >/dev/null 2>&1; then
+            kubectl create configmap aws-auth -n kube-system --from-literal="mapRoles=${ENTRY}"
+          elif ! kubectl get configmap aws-auth -n kube-system -o jsonpath='{.data.mapRoles}' | grep -qF "$ROLE_ARN"; then
+            CURRENT=$(kubectl get configmap aws-auth -n kube-system -o jsonpath='{.data.mapRoles}')
+            PATCH=$(python3 -c 'import json,sys; print(json.dumps({"data":{"mapRoles":sys.argv[1]+"\n"+sys.argv[2]}}))' "$CURRENT" "$ENTRY")
+            kubectl patch configmap aws-auth -n kube-system --type merge -p "$PATCH"
+          fi
+          kubectl get configmap aws-auth -n kube-system -o yaml
+
       - name: Esperar nodos EKS
         run: |
           READY_NODES=0
@@ -312,9 +332,11 @@ jobs:
           if [ "$READY_NODES" -lt 1 ]; then
             echo "No hay nodos Ready en freshbox-eks"
             kubectl get nodes -o wide || true
+            aws eks describe-cluster --name freshbox-eks --region "$AWS_REGION" \
+              --query 'cluster.{status:status,createdAt:createdAt,version:version}' || true
             aws eks describe-nodegroup --cluster-name freshbox-eks \
               --nodegroup-name freshbox-nodes --region "$AWS_REGION" \
-              --query 'nodegroup.{status:status,health:health,desired:scalingConfig.desiredSize,subnets:subnets}' || true
+              --query 'nodegroup.{status:status,createdAt:createdAt,health:health,desired:scalingConfig.desiredSize,subnets:subnets}' || true
             aws ec2 describe-instances --region "$AWS_REGION" \
               --filters "Name=tag:kubernetes.io/cluster/freshbox-eks,Values=owned,shared" \
               --query 'Reservations[].Instances[].{id:InstanceId,state:State.Name,type:InstanceType,subnet:SubnetId}' \
