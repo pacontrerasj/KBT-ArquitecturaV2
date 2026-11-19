@@ -8,7 +8,7 @@ data "aws_iam_role" "lab" {
 
 locals {
   lambda_role_arn = var.lambda_role_arn != "" ? var.lambda_role_arn : data.aws_iam_role.lab.arn
-  alb_host        = var.alb_dns != "" ? var.alb_dns : "placeholder.local"
+  alb_host        = var.alb_dns != "" ? var.alb_dns : "example.com"
 }
 
 data "archive_file" "cart" {
