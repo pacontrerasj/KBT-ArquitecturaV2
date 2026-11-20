@@ -32,6 +32,22 @@ resource "aws_eks_cluster" "main" {
   }
 }
 
+resource "aws_launch_template" "node" {
+  name_prefix = "freshbox-node-"
+  description = "Nodos EKS con IMDSv2 hop limit 2 para pods"
+
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 2
+    instance_metadata_tags      = "disabled"
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
 resource "aws_eks_node_group" "main" {
   cluster_name    = aws_eks_cluster.main.name
   node_group_name = "freshbox-nodes"
@@ -40,6 +56,11 @@ resource "aws_eks_node_group" "main" {
 
   instance_types = ["t3.medium"]
   capacity_type  = "ON_DEMAND"
+
+  launch_template {
+    id      = aws_launch_template.node.id
+    version = aws_launch_template.node.latest_version
+  }
 
   scaling_config {
     desired_size = 2
